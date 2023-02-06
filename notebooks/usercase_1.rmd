@@ -1,0 +1,184 @@
+
+```{r}
+library(readr)
+library(magrittr)
+```
+
+```{r}
+metabric_data <- readr::read_csv("data/raw/METABRIC_RNA_Mutation.csv")
+head(metabric_data)
+```
+
+Index starts at 1 in R, so we need to add 1 to the column numbers in the paper.
+
+```{r}
+# from 1 to 31 are the clinical data
+clinical <- metabric_data %>% 
+  dplyr::select(1:31)
+names(clinical) <- paste0(names(clinical), "_meta")
+print(paste("clinical data shape:", dim(clinical)))
+
+# from 31 to 520 are the gene expression data
+
+expression <- metabric_data %>% 
+  dplyr::select(32:ncol(metabric_data)) %>% 
+  dplyr::select(-dplyr::ends_with("_mut"))
+names(expression) <- paste0(names(expression), "_expr")
+print(paste("expression data shape:", dim(expression)))
+
+# from 519 to end are the mutation data
+
+mutation <- metabric_data %>% 
+  dplyr::select(dplyr::ends_with("_mut"))
+print(paste("mutation data shape:", dim(mutation)))
+```
+
+recode overall_survival_meta to categorical.
+
+```{r}
+clinical %<>%
+  dplyr::mutate(
+    survival_cat = dplyr::if_else(
+      overall_survival_meta == 0, "dead", "alive"
+    )
+  )
+```
+
+```{r}
+library(ggpubr)
+
+p <- ggscatter(
+  clinical, 
+  x = "tumor_size_meta", 
+  y = "mutation_count_meta",
+  add = "reg.line",                                 # Add regression line
+  conf.int = TRUE,                               # Add confidence interval
+  color = "survival_cat"
+ ) + 
+ stat_cor(method = "pearson", label.x = 3, label.y = 30)  # Add correlation coefficient
+
+p
+
+```
+
+```{r}
+# boxplot of mutation count by survival status with statistical test
+ggboxplot(
+  clinical, 
+  x = "survival_cat", 
+  y = "mutation_count_meta",
+  color = "survival_cat"
+) + 
+stat_compare_means(comparisons = list(c("alive", "dead")))
+```
+
+```{r}
+# Load the pheatmap library
+library(pheatmap)
+
+# Create the data matrix
+data_matrix <- as.matrix(expression)
+
+# Generate the heatmap
+pheatmap(data_matrix,
+        color = colorRampPalette(c("blue", "white", "red"))(100),
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "correlation",
+        show_rownames = TRUE)
+
+```
+
+```{r}
+# Load the survival package
+library(survival)
+
+my_df <- clinical %>%
+  dplyr::select(overall_survival_months_meta, overall_survival_meta) %>%
+  tidyr::drop_na()
+
+time <- my_df$overall_survival_months_meta
+event <- my_df$overall_survival_meta %>% as.numeric()
+
+# Create a survival object using the `Surv` function
+surv_obj <- Surv(time, event)
+
+# Fit the survival model using `survfit`
+fit <- survfit(surv_obj ~ 1, data = my_df)
+
+# Plot the Kaplan-Meier curve
+plot(
+  fit, 
+  main = "Kaplan-Meier Curve", 
+  xlab = "Time", 
+  ylab = "Survival Probability"
+  )
+```
+
+```{r}
+my_df <- clinical %>%
+  tidyr::drop_na()
+
+time <- my_df$overall_survival_months_meta
+event <- my_df$overall_survival_meta %>% as.numeric()
+
+surv_obj <- Surv(time, event)
+
+# use coxph to fit the model
+coxph(surv_obj ~ age_at_diagnosis_meta + tumor_size_meta + lymph_nodes_examined_positive_meta, data = my_df)
+```
+
+linear regression in R with the limma package.
+
+```{r}
+
+library(limma)
+library(Biobase)
+
+# create an expression set
+my_exprset <- ExpressionSet(
+  assayData = t(as.matrix(expression)),
+  phenoData = AnnotatedDataFrame(as.data.frame(clinical))
+)
+
+# Create the design matrix
+design <- model.matrix(
+  as.formula("~ overall_survival_meta + age_at_diagnosis_meta"), 
+  data = Biobase::pData(my_exprset))
+# Create the contrast matrix
+# Fit the linear model
+fit <- lmFit(my_exprset, design)
+# Fit the empirical Bayes
+fit2 <- eBayes(fit)
+# Plot the top 10 genes
+topTable(fit2, number = 10)
+```
+
+```{r}
+library(Glimma)
+glimmaMA(fit2, dge = my_exprset)
+```
+
+
+
+```{r}
+library(EnhancedVolcano)
+# get table from limma
+top_table <- topTable(fit2, coef = "overall_survival_meta", number = nrow(expression))
+# plot enhanced volcano
+EnhancedVolcano::EnhancedVolcano(
+  top_table, 
+  lab = rownames(top_table), 
+  x = "logFC", 
+  y = "P.Value", 
+  title = "Volcano Plot", 
+  xlab = "log2 Fold Change", 
+  ylab = "-log10(P-value)", 
+  xlim = c(-1, 1), 
+  ylim = c(0, 10), 
+  pCutoff = 0.05, 
+  FCcutoff = 0.1, 
+  pointSize = 3, 
+  legendPosition = "bottomright",
+  col = c("blue", "blue")
+)
+```
