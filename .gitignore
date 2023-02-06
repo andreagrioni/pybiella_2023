@@ -2,3 +2,4 @@
 .DS_Store
 logs.log
 my_model.pkl
+*.csv
